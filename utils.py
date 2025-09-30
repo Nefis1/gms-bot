@@ -30,9 +30,17 @@ def format_time_elapsed(time_input) -> str:
         minutes = time_input
     else:  # Если передан timestamp
         if isinstance(time_input, str):
-            past_time = datetime.fromisoformat(time_input)
+            # ИСПРАВЛЕНИЕ: корректная обработка времени с временными зонами
+            time_str = time_input.split('+')[0]  # Убираем временную зону
+            if 'Z' in time_str:
+                past_time = datetime.fromisoformat(time_str.replace('Z', '+00:00'))
+                past_time = past_time.replace(tzinfo=None)  # Делаем naive
+            else:
+                past_time = datetime.fromisoformat(time_str)
         else:
-            past_time = time_input
+            # Если это datetime объект
+            past_time = time_input.replace(tzinfo=None) if hasattr(time_input, 'tzinfo') and time_input.tzinfo else time_input
+            
         now = datetime.now()
         elapsed = now - past_time
         minutes = int(elapsed.total_seconds() / 60)
@@ -67,7 +75,7 @@ def format_ticket_message(ticket_data: Dict[str, Any]) -> str:
         'awaiting_correction': 'Ожид. исправления'
     }
     
-    message = f"🎫 *Тикет {ticket_data['ticket_id']}*\n"
+    message = f"🎫  Тикет {ticket_data['ticket_id']}\n"
     message += f"🏷️ Продукт: {ticket_data['product']} | {ticket_data['brand']}\n"
     message += f"⚗️ Миксер: {ticket_data['mixer']}\n"
     message += f"📊 Статус: {status_map.get(ticket_data['status'], ticket_data['status'])}\n"
@@ -114,13 +122,21 @@ def format_step_ru(step: str) -> str:
 
 def check_timeout(ticket_data: Dict[str, Any]) -> Dict[str, Any]:
     """Проверяет таймауты для тикета"""
-    now = datetime.now()
-    last_action = None
+    now = datetime.now()  # naive datetime
     
     # Находим время последнего действия
     if ticket_data.get('history'):
         last_action = max(ticket_data['history'], key=lambda x: x['timestamp'])
-        last_time = datetime.fromisoformat(last_action['timestamp'])
+        last_time_str = last_action['timestamp']
+        
+        # Конвертируем в naive datetime
+        last_time_str = last_time_str.split('+')[0]  # Убираем временную зону
+        if 'Z' in last_time_str:
+            last_time = datetime.fromisoformat(last_time_str.replace('Z', '+00:00'))
+            last_time = last_time.replace(tzinfo=None)
+        else:
+            last_time = datetime.fromisoformat(last_time_str)
+        
         elapsed_minutes = (now - last_time).total_seconds() / 60
         
         # Проверяем таймауты в зависимости от статуса

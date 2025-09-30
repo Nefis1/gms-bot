@@ -2,7 +2,8 @@ import json
 import os
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
-from config import PRODUCT_MIXERS
+from config import PRODUCT_MIXERS, MSK_TIMEZONE_OFFSET
+from utils import get_msk_time, format_msk_time
 
 class Database:
     def __init__(self, db_path: str = "tickets.json", archive_path: str = "archive_tickets.json"):
@@ -60,14 +61,14 @@ class Database:
         
         # Инициализируем историю анализов и корректировок
         ticket_data['ticket_id'] = ticket_id
-        ticket_data['created_at'] = datetime.now().isoformat()
+        ticket_data['created_at'] = get_msk_time().isoformat()
         ticket_data['status'] = 'production_started'
         ticket_data['current_step'] = 'awaiting_sample'
         ticket_data['analyses_history'] = []  # История анализов
         ticket_data['corrections_history'] = []  # История корректировок
         ticket_data['history'] = [{
             'action': 'ticket_created',
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': get_msk_time().isoformat(),
             'user': ticket_data.get('username', 'unknown')
         }]
         
@@ -112,7 +113,7 @@ class Database:
                 
                 ticket['history'].append({
                     'action': updates.get('action', 'status_changed'),
-                    'timestamp': datetime.now().isoformat(),
+                    'timestamp': get_msk_time().isoformat(),
                     'user': updates.get('username', 'unknown'),
                     'details': updates.get('details', '')
                 })
@@ -123,7 +124,7 @@ class Database:
                         ticket['analyses_history'] = []
                     
                     ticket['analyses_history'].append({
-                        'timestamp': datetime.now().isoformat(),
+                        'timestamp': format_msk_time(get_msk_time()),
                         'user': updates.get('username', 'unknown'),
                         'result': 'approved',
                         'details': 'Продукт допущен в производство',
@@ -136,7 +137,7 @@ class Database:
                         ticket['corrections_history'] = []
                     
                     ticket['corrections_history'].append({
-                        'timestamp': datetime.now().isoformat(),
+                        'timestamp': format_msk_time(get_msk_time()),
                         'user': updates.get('username', 'unknown'),
                         'note': updates.get('correction_note'),
                         'analysis_number': len(ticket.get('analyses_history', [])) + 1
@@ -157,11 +158,28 @@ class Database:
     def _move_to_archive(self, ticket: Dict[str, Any]):
         """Перемещает тикет в архив"""
         archive = self._load_archive()
-        ticket['completed_at'] = datetime.now().isoformat()
+        ticket['completed_at'] = get_msk_time().isoformat()
         
         # Рассчитываем общее время производства
-        created_at = datetime.fromisoformat(ticket['created_at'])
-        completed_at = datetime.fromisoformat(ticket['completed_at'])
+        created_at_str = ticket['created_at']
+        completed_at_str = ticket['completed_at']
+        
+        # Обрабатываем время создания
+        if 'Z' in created_at_str:
+            created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+            created_at = created_at.replace(tzinfo=None)
+        else:
+            created_at_str = created_at_str.split('+')[0]
+            created_at = datetime.fromisoformat(created_at_str)
+            
+        # Обрабатываем время завершения
+        if 'Z' in completed_at_str:
+            completed_at = datetime.fromisoformat(completed_at_str.replace('Z', '+00:00'))
+            completed_at = completed_at.replace(tzinfo=None)
+        else:
+            completed_at_str = completed_at_str.split('+')[0]
+            completed_at = datetime.fromisoformat(completed_at_str)
+        
         total_time = completed_at - created_at
         ticket['total_production_time_minutes'] = int(total_time.total_seconds() / 60)
         
@@ -196,24 +214,35 @@ class Database:
         """Возвращает статус всех миксеров"""
         tickets = self._load_tickets()
         active_tickets = self.get_active_tickets()
-        
+    
         status = {}
         # Все миксеры из конфига
         all_mixers = set()
         for mixers in PRODUCT_MIXERS.values():
             all_mixers.update(mixers)
-        
+    
         for mixer in sorted(all_mixers):
             mixer_tickets = [t for t in active_tickets if t.get('mixer') == f"Миксер_{mixer}"]
             if mixer_tickets:
                 ticket = mixer_tickets[0]
-                
-                # Рассчитываем общее время с начала производства
-                created_at = datetime.fromisoformat(ticket['created_at'])
-                now = datetime.now()
+            
+                # Исправление: делаем оба времени aware или оба naive
+                created_at_str = ticket['created_at']
+                if 'Z' in created_at_str:
+                    # Если время в UTC формате
+                    created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                    # Конвертируем в МСК и делаем naive
+                    created_at = created_at + timedelta(hours=MSK_TIMEZONE_OFFSET)
+                    created_at = created_at.replace(tzinfo=None)
+                else:
+                    # Если время уже в МСК (убираем временную зону если есть)
+                    created_at_str = created_at_str.split('+')[0]  # Убираем временную зону
+                    created_at = datetime.fromisoformat(created_at_str)
+            
+                now = get_msk_time().replace(tzinfo=None)  # Делаем naive для сравнения
                 total_time = now - created_at
                 total_minutes = int(total_time.total_seconds() / 60)
-                
+            
                 status[f"Миксер_{mixer}"] = {
                     'ticket_id': ticket.get('ticket_id'),
                     'status': ticket.get('status'),
@@ -223,5 +252,5 @@ class Database:
                 }
             else:
                 status[f"Миксер_{mixer}"] = {'status': 'free'}
-        
+    
         return status

@@ -12,12 +12,25 @@ app = Flask(__name__)
 # Инициализация базы данных
 db = Database()
 
+# Обработчики ошибок
+@app.errorhandler(500)
+def internal_error(error):
+    return f"Внутренняя ошибка сервера: {str(error)}", 500
+
+@app.errorhandler(404)
+def not_found(error):
+    return "Страница не найдена", 404
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    return f"Произошла ошибка: {str(e)}", 500
+
 def get_tickets_for_current_shift():
     """Возвращает статистику тикетов за текущую смену"""
     current_shift = get_current_shift()
     shift_start_hour = 7 if current_shift == "дневная" else 19
 
-    now = get_msk_time()
+    now = get_msk_time().replace(tzinfo=None)  # Делаем naive для сравнения
     shift_start = datetime(now.year, now.month, now.day, shift_start_hour, 0, 0)
     if now.hour < shift_start_hour:
         shift_start = shift_start - timedelta(days=1)
@@ -28,7 +41,15 @@ def get_tickets_for_current_shift():
 
     shift_tickets = []
     for ticket in all_tickets_combined:
-        created_at = datetime.fromisoformat(ticket['created_at'])
+        created_at_str = ticket['created_at']
+        # ИСПРАВЛЕНИЕ: корректная обработка времени создания
+        if 'Z' in created_at_str:
+            created_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+            created_at = created_at.replace(tzinfo=None)
+        else:
+            created_at_str = created_at_str.split('+')[0]
+            created_at = datetime.fromisoformat(created_at_str)
+            
         if created_at >= shift_start:
             shift_tickets.append(ticket)
 
@@ -102,6 +123,33 @@ def index():
     except Exception as e:
         print(f"Ошибка в index: {e}")
         return f"Ошибка: {str(e)}", 500
+
+@app.route('/test')
+def test():
+    return "Веб-приложение работает! Время МСК: " + format_msk_time()
+
+@app.route('/debug/time')
+def debug_time():
+    """Диагностика времени"""
+    try:
+        from utils import get_msk_time, format_msk_time
+        from database import Database
+        
+        db = Database()
+        tickets = db._load_tickets()
+        
+        result = []
+        result.append(f"Текущее время МСК: {format_msk_time()}")
+        result.append(f"Тикетов в базе: {len(tickets)}")
+        
+        if tickets:
+            for i, ticket in enumerate(tickets[:3]):  # Первые 3 тикета
+                result.append(f"Тикет {i+1}: {ticket.get('ticket_id')} - created_at: {ticket.get('created_at')}")
+        
+        return "<br>".join(result)
+        
+    except Exception as e:
+        return f"Ошибка в диагностике: {str(e)}", 500
 
 @app.route('/stats')
 def stats():
